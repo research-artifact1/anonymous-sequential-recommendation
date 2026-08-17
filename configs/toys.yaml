@@ -1,0 +1,11 @@
+_base_: base.yaml
+dataset:
+  name: Toys_and_Games_2014
+  sequence_path: data/processed/Toys_and_Games_2014_sequences.pkl
+  text_features_path: data/processed/Toys_and_Games_2014_clip_vitb32_openai_text.pt
+  image_features_path: data/processed/Toys_and_Games_2014_clip_vitb32_openai_image.pt
+model:
+  dropout: 0.3
+training:
+  learning_rate: 0.001
+

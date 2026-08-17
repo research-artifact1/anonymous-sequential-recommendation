@@ -1,0 +1,62 @@
+dataset:
+  name: null
+  sequence_path: null
+  text_features_path: null
+  image_features_path: null
+  max_length: 50
+  timestamp_unit: seconds
+
+model:
+  hidden_dim: 128
+  num_heads: 2
+  num_layers: 2
+  max_timestep: 4096
+  dropout: 0.2
+  gap_buckets: 128
+  text_dim: 512
+  text_streams: 1
+  image_dim: 512
+  graph_layers: 1
+  graph_gamma_max: 0.5
+  num_interests: 4
+  interest_gate_max: 0.5
+  transition_beta_max: 3.0
+  reranker_top_m: 200
+  reranker_history_length: 8
+  reranker_attention_dim: 64
+  reranker_hidden_dim: 64
+  reranker_beta_max: 3.0
+
+structure:
+  exclude_last: 2
+  graph_min_count: 2
+  graph_top_k: 20
+  transition_min_count: 2
+  transition_top_k: 20
+
+objective:
+  recency_start: 0.8
+  recency_final: 0.5
+  recency_anneal_epochs: 10
+  reranker_aux_weight: 0.001
+  reranker_aux_top_k: 20
+  reranker_aux_temperature: 1.0
+
+training:
+  seed: 2026
+  batch_size: 256
+  eval_batch_size: 512
+  learning_rate: 0.001
+  weight_decay: 0.0
+  epochs: 200
+  patience: 20
+  gradient_clip_norm: 5.0
+  num_workers: 4
+  amp: true
+  deterministic: true
+  selection_metric: NDCG@20
+
+output:
+  root: runs
+  run_name: null
+
