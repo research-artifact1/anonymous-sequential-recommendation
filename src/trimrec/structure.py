@@ -12,7 +12,8 @@ from trimrec.data import Corpus
 
 def _training_items(corpus: Corpus, exclude_last: int) -> Iterable[List[int]]:
     for sequence in corpus.sequences.values():
-        visible = sequence[:-exclude_last] if exclude_last else sequence
+        omitted = exclude_last - int(corpus.train_val_only)
+        visible = sequence[:-omitted] if omitted > 0 else sequence
         yield [event.item_id for event in visible]
 
 

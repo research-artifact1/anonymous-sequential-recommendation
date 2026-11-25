@@ -1,10 +1,9 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite the associated TRIMRec paper."
-title: "TRIMRec: Trajectory-aware Retrieval and Candidate-conditioned Multimodal Refinement"
+title: "TRIMRec: Trajectory-aware Retrieval and Item-conditioned Multimodal Refinement for Sequential Recommendation"
 type: software
 authors:
   - family-names: "TRIMRec Authors"
-version: 1.0.0
-date-released: 2026-08-17
+version: 1.1.0
 license: MIT
 

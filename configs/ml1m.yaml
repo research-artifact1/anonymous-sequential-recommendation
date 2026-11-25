@@ -1,0 +1,15 @@
+_base_: base.yaml
+dataset:
+  name: MovieLens_1M
+  sequence_path: data/processed/ml1m/train_val.pkl
+  text_features_path: data/processed/ml1m/text.pt
+  image_features_path: data/processed/ml1m/image.pt
+  train_val_only: true
+model:
+  dropout: 0.2
+  mask_missing_text_residual: true
+  cpu_graph_eval: true
+  fp32_scorer: true
+training:
+  eval_batch_size: 256
+  num_workers: 0

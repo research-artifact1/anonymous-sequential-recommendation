@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import random
 from datetime import datetime
 from pathlib import Path
@@ -16,15 +17,28 @@ import torch
 
 
 def set_seed(seed: int, deterministic: bool) -> None:
+    if deterministic:
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    torch.use_deterministic_algorithms(deterministic, warn_only=True)
+    torch.backends.cudnn.deterministic = deterministic
     if deterministic:
-        torch.use_deterministic_algorithms(True, warn_only=True)
         torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
+
+
+def environment(device: torch.device) -> dict:
+    return {
+        "python": platform.python_version(),
+        "numpy": np.__version__,
+        "torch": str(torch.__version__),
+        "cuda": torch.version.cuda,
+        "device": str(device),
+        "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
+    }
 
 
 def seed_worker(worker_id: int) -> None:

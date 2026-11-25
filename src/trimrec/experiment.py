@@ -36,7 +36,7 @@ def build_experiment(
     sequence_path = resolve_input_path(project_root, config.dataset.sequence_path)
     text_path = resolve_input_path(project_root, config.dataset.text_features_path)
     image_path = resolve_input_path(project_root, config.dataset.image_features_path)
-    corpus = load_corpus(sequence_path)
+    corpus = load_corpus(sequence_path, config.dataset.train_val_only)
     features = load_frozen_features(
         text_path,
         image_path,

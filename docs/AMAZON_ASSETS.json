@@ -1,0 +1,29 @@
+{
+  "description": "Reference SHA-256 fingerprints of the frozen Amazon experiment inputs; files are not distributed.",
+  "datasets": {
+    "Beauty_2014": {
+      "users": 22363, "items": 12101, "interactions": 198502,
+      "sequences": "33a414ae6f120b27bc2364ac8242da38d6163f83e60e42c1fef6ae80b10cfddb",
+      "text_features": "210c8adb3f7a32a7fc4c201a37eb9784101205ceb328c8f396817500f882a3ca",
+      "image_features": "9ec7a6588b284595fd834f547908434dd88eacbaa85bb24fb831691f6c18b346"
+    },
+    "Sports_and_Outdoors_2014": {
+      "users": 35598, "items": 18357, "interactions": 296337,
+      "sequences": "68ae16168a70fbf008475785e54e3b90913f3df8e362d302e6c37b4eda2fa15a",
+      "text_features": "01d001f9d04a94a42cc996b777fdedd65836787b51ac741e2d7b8437dc0ca88e",
+      "image_features": "f0b9c153130e105f381a82c21380cc0d19a583061c7878629b29d48f15f64ff5"
+    },
+    "Toys_and_Games_2014": {
+      "users": 19412, "items": 11924, "interactions": 167597,
+      "sequences": "c676f392e24e7b758455185e9ec205a4f89411dc4cde03f14b7ccafc4e6058c2",
+      "text_features": "c85d2b9ee7988deb5e92de32bb314a099e07dc598f2422d7b9762c57b99fccc5",
+      "image_features": "869119cd571136f084c775855bc304377aca11bd41a14094e435036a7f1dae5e"
+    },
+    "Video_Games_2014": {
+      "users": 24303, "items": 10672, "interactions": 231780,
+      "sequences": "30c9a79474ee1a5b42410472530287a4421b463a916a33c176f99c41cc7f79d5",
+      "text_features": "8e145887933a7ceeab6cf1b365304520f41176fd43b0933b85b45257cba21018",
+      "image_features": "58c0fea6514f2c50983d26a642280b6c89225336df3518340f3dbc3c4c0276d9"
+    }
+  }
+}

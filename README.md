@@ -1,14 +1,18 @@
 # TRIMRec
 
+**Trajectory-aware Retrieval and Item-conditioned Multimodal Refinement for
+Sequential Recommendation**
+
 TRIMRec is a sequential recommender that performs collaborative retrieval before
 candidate-level multimodal refinement. It combines a Return-State-Action
 trajectory encoder, training-prefix structural priors, multi-interest
 full-catalog retrieval, and a candidate-conditioned reranker over frozen text
 and image features.
 
-This repository contains the final model and reproducibility pipeline. It does
-not include baseline implementations, hyperparameter-search drivers, or
-historical ablation branches.
+This anonymous review artifact implements TRIMRec, the component ablations,
+and the early-fusion control across the four Amazon domains and MovieLens-1M.
+It supports fresh runs, not loading the original research checkpoints. See
+[experiment coverage and limits](docs/REPRODUCIBILITY.md).
 
 ## Method
 
@@ -33,12 +37,15 @@ selection signal.
 Python 3.9 or later and PyTorch 2.1 or later are required.
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/research-artifact1/anonymous-sequential-recommendation.git TRIMRec
 cd TRIMRec
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
+
+Install an appropriate PyTorch CPU or CUDA build before the editable install
+if the default wheel is unsuitable for your machine.
 
 Install the optional CLIP preprocessing dependencies when features must be
 re-extracted:
@@ -49,7 +56,7 @@ pip install -e ".[clip]"
 
 ## Data
 
-Each processed dataset uses:
+Each processed Amazon dataset uses:
 
 ```text
 data/processed/<dataset>_sequences.pkl
@@ -62,6 +69,22 @@ The sequence file contains a `sequences` mapping. Every event is
 tensors contain one padding row followed by item-aligned 512-dimensional CLIP
 features. See [docs/DATA_FORMAT.md](docs/DATA_FORMAT.md) for the complete
 contract.
+
+For **MovieLens-1M**, obtain the original ZIPs from
+[GroupLens](https://grouplens.org/datasets/movielens/) and the released CLIP
+vectors from [M3L](https://zenodo.org/records/18499145) under their respective
+terms. The preparation command verifies and reads the supplied archives:
+
+```bash
+trimrec prepare-ml1m --ml1m data/raw/ml-1m.zip --ml10m data/raw/ml-10m.zip \
+  --text data/raw/TEXT_clip-text.zip --image data/raw/IMG_clip-image.zip \
+  --output data/processed/ml1m
+trimrec inspect --config configs/ml1m.yaml --device cpu
+```
+
+The Amazon scripts below are convenience tools. Re-extracted features are
+not interchangeable with experimental feature tensors unless the checksums
+match the [Amazon asset reference](docs/AMAZON_ASSETS.json).
 
 Amazon review files can be prepared with:
 
@@ -87,14 +110,14 @@ and saves `best.pt` according to Val NDCG@20.
 trimrec train --config configs/beauty.yaml --device cuda:0
 ```
 
-Configuration values can be changed without editing YAML files:
+To rerun a specified seed and component ablation:
 
 ```bash
 trimrec train \
   --config configs/sports.yaml \
   --device cuda:1 \
-  --set training.seed=123 \
-  --set training.batch_size=128
+  --variant no_refinement \
+  --set training.seed=123
 ```
 
 Every run writes the resolved configuration, input SHA-256 fingerprints,
@@ -116,6 +139,10 @@ trimrec evaluate \
   --output runs/<run>/test.json
 ```
 
+Use the same dataset, variant, and seed overrides as for training. For ML-1M,
+add `--test-source data/raw/ml-1m.zip`. This archive is required only by the
+explicit Test path, after the checkpoint and input fingerprints are checked.
+
 Full-catalog HR and NDCG are reported at 5, 10, 20, 50, 100, and 200, together
 with MRR@20. `RetrievalRecall@M` is the fraction of true next items present in
 the pre-reranking Top-M pool.
@@ -131,6 +158,7 @@ choices selected by validation NDCG@20 are:
 | Sports and Outdoors | 0.001 | 0.3 | 256 | 2 | 128 |
 | Toys and Games | 0.001 | 0.3 | 256 | 2 | 128 |
 | Video Games | 0.001 | 0.3 | 256 | 2 | 128 |
+| MovieLens-1M | 0.001 | 0.2 | 256 | 2 | 128 |
 
 The paper reports five fixed seeds: `1`, `123`, `1337`, `2025`, and `2026`.
 All remaining final parameters are recorded in
@@ -147,12 +175,13 @@ the count directly.
 
 ## Reproducibility
 
-The strict protocol and artifact policy are documented in
-[docs/REPRODUCIBILITY.md](docs/REPRODUCIBILITY.md). To run the test suite:
+See [docs/REPRODUCIBILITY.md](docs/REPRODUCIBILITY.md) for five-seed
+commands, ablation definitions, and before/after refinement diagnostics.
+To run the CPU test suite:
 
 ```bash
 pip install -e ".[dev]"
-pytest
+python -m pytest
 ```
 
 ## Citation

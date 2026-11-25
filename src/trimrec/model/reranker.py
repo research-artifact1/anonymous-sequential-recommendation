@@ -30,24 +30,32 @@ class CandidateReranker(nn.Module):
         attention_dim: int,
         scorer_hidden_dim: int,
         beta_max: float,
+        mode: str = "cross_attention",
+        candidate_modalities: bool = True,
+        fp32_scorer: bool = False,
     ) -> None:
         super().__init__()
         self.top_m = top_m
         self.history_length = history_length
         self.beta_max = beta_max
-        feature_dim = history_length * (text_streams + 2)
+        self.mode = mode
+        self.candidate_modalities = candidate_modalities
+        self.fp32_scorer = fp32_scorer
+        feature_dim = history_length * (text_streams + 2 if candidate_modalities else 1)
 
         # A fixed local initialization stream keeps the refinement head
         # comparable across backbone seeds without changing global randomness.
         with torch.random.fork_rng(devices=[]):
             torch.manual_seed(17017)
             self.item_norm = nn.LayerNorm(hidden_dim)
-            self.query = nn.Linear(hidden_dim, attention_dim)
-            self.key = nn.Linear(hidden_dim, attention_dim)
-            self.value = nn.Linear(hidden_dim, attention_dim)
-            self.context_norm = nn.LayerNorm(attention_dim)
+            if mode == "cross_attention":
+                self.query = nn.Linear(hidden_dim, attention_dim)
+                self.key = nn.Linear(hidden_dim, attention_dim)
+                self.value = nn.Linear(hidden_dim, attention_dim)
+                self.context_norm = nn.LayerNorm(attention_dim)
+                feature_dim += 3 * attention_dim
             self.scorer = nn.Sequential(
-                nn.Linear(3 * attention_dim + feature_dim, scorer_hidden_dim),
+                nn.Linear(feature_dim, scorer_hidden_dim),
                 nn.GELU(),
                 nn.Linear(scorer_hidden_dim, 1),
             )
@@ -95,40 +103,37 @@ class CandidateReranker(nn.Module):
         id_similarity = torch.einsum("bmd,bhd->bmh", candidates, history)
         id_similarity *= history_valid[:, None].to(id_similarity.dtype)
 
-        candidate_text = F.normalize(text_features[candidate_ids], dim=-1)
-        history_text = F.normalize(text_features[history_ids], dim=-1)
-        text_similarity = torch.einsum("bmsd,bhsd->bmhs", candidate_text, history_text)
-        text_similarity *= history_valid[:, None, :, None].to(text_similarity.dtype)
+        features = [id_similarity]
+        if self.candidate_modalities:
+            candidate_text = F.normalize(text_features[candidate_ids], dim=-1)
+            history_text = F.normalize(text_features[history_ids], dim=-1)
+            text_sim = torch.einsum("bmsd,bhsd->bmhs", candidate_text, history_text)
+            text_sim *= history_valid[:, None, :, None].to(text_sim.dtype)
+            candidate_image = F.normalize(image_features[candidate_ids], dim=-1)
+            history_image = F.normalize(image_features[history_ids], dim=-1)
+            image_sim = torch.einsum("bmd,bhd->bmh", candidate_image, history_image)
+            image_sim *= history_valid[:, None].to(image_sim.dtype)
+            features.extend((text_sim.flatten(start_dim=2), image_sim))
 
-        candidate_image = F.normalize(image_features[candidate_ids], dim=-1)
-        history_image = F.normalize(image_features[history_ids], dim=-1)
-        image_similarity = torch.einsum("bmd,bhd->bmh", candidate_image, history_image)
-        image_similarity *= history_valid[:, None].to(image_similarity.dtype)
+        if self.mode == "cross_attention":
+            query = self.query(candidates)
+            key = self.key(history)
+            value = self.value(history) * history_valid.unsqueeze(-1)
+            attention_logits = torch.einsum("bma,bha->bmh", query, key)
+            attention_logits = attention_logits / math.sqrt(float(query.size(-1)))
+            attention_logits = attention_logits.masked_fill(
+                ~history_valid[:, None], -1e4
+            )
+            attention = F.softmax(attention_logits, dim=-1)
+            context = self.context_norm(torch.einsum("bmh,bha->bma", attention, value))
+            features = [query, context, query * context, *features]
 
-        explicit_features = torch.cat(
-            (
-                id_similarity,
-                text_similarity.flatten(start_dim=2),
-                image_similarity,
-            ),
-            dim=-1,
-        )
-
-        query = self.query(candidates)
-        key = self.key(history)
-        value = self.value(history)
-        value *= history_valid.unsqueeze(-1).to(value.dtype)
-        attention_logits = torch.einsum("bma,bha->bmh", query, key)
-        attention_logits /= math.sqrt(max(float(query.size(-1)), 1.0))
-        attention_logits = attention_logits.masked_fill(~history_valid[:, None], -1e4)
-        attention = F.softmax(attention_logits, dim=-1)
-        context = torch.einsum("bmh,bha->bma", attention, value)
-        context = self.context_norm(context)
-
-        features = torch.cat(
-            (query, context, query * context, explicit_features), dim=-1
-        )
-        scores = self.scorer(features).squeeze(-1)
+        matching = torch.cat(features, dim=-1)
+        if self.fp32_scorer:
+            with torch.autocast(device_type=matching.device.type, enabled=False):
+                scores = self.scorer(matching.float()).squeeze(-1)
+        else:
+            scores = self.scorer(matching).squeeze(-1)
         scores = scores - scores.mean(dim=1, keepdim=True)
 
         beta = self.beta_max * torch.tanh(self.beta_raw)

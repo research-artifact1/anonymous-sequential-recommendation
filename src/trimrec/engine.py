@@ -17,7 +17,7 @@ from trimrec.checkpoint import load_checkpoint, save_checkpoint
 from trimrec.config import ExperimentConfig
 from trimrec.data import Corpus, TrajectoryDataset
 from trimrec.losses import compute_loss
-from trimrec.metrics import RankingMetrics
+from trimrec.metrics import RankingMetrics, catalog_ranks
 from trimrec.model.trimrec import TRIMRec
 from trimrec.runtime import JsonlWriter, seed_worker, write_json
 
@@ -64,26 +64,77 @@ def evaluate(
     loader: Iterable[Dict[str, torch.Tensor]],
     device: torch.device,
     show_progress: bool = True,
+    amp: bool = False,
+    refinement_report: Optional[dict] = None,
 ) -> Dict[str, float]:
     model.eval()
     metrics = RankingMetrics()
     retrieval_hits = 0.0
     examples = 0
+    before = RankingMetrics()
+    transitions = {
+        "promoted_20": 0,
+        "lost_20": 0,
+        "candidate_rank_improved": 0,
+        "candidate_rank_tied": 0,
+        "candidate_rank_worsened": 0,
+    }
     iterator = tqdm(loader, desc="Evaluate", leave=False, disable=not show_progress)
     with torch.inference_mode():
         for cpu_batch in iterator:
             batch = move_batch(cpu_batch, device)
-            output = model(batch)
+            actions = batch["actions"]
             batch_index = torch.arange(batch["states"].size(0), device=device)
-            targets = batch["actions"][batch_index, output.final_positions]
+            terminal = batch["attention_mask"].sum(1).long() - 1
+            targets = actions[batch_index, terminal]
+            visible_actions = actions.clone()
+            visible_actions[batch_index, terminal] = 0
+            with torch.autocast(
+                device_type=device.type,
+                dtype=torch.float16,
+                enabled=amp and device.type == "cuda",
+            ):
+                output = model(
+                    {**batch, "actions": visible_actions},
+                    include_retrieval=refinement_report is not None,
+                )
             final_logits = output.logits[batch_index, output.final_positions]
-            metrics.update(final_logits, targets)
-            retrieval_hits += (
-                output.candidate_ids.eq(targets[:, None]).any(1).sum().item()
-            )
+            after_ranks = catalog_ranks(final_logits, targets)
+            metrics.update_ranks(after_ranks)
+            in_pool = output.candidate_ids.eq(targets[:, None]).any(1)
+            retrieval_hits += in_pool.sum().item()
+            if refinement_report is not None:
+                if output.retrieval_logits is None:
+                    raise ValueError(
+                        "refinement diagnostics require an enabled refiner"
+                    )
+                before_ranks = catalog_ranks(output.retrieval_logits, targets)
+                before.update_ranks(before_ranks)
+                transitions["promoted_20"] += int(
+                    ((before_ranks > 20) & (after_ranks <= 20)).sum()
+                )
+                transitions["lost_20"] += int(
+                    ((before_ranks <= 20) & (after_ranks > 20)).sum()
+                )
+                for label, mask in (
+                    ("improved", after_ranks < before_ranks),
+                    ("tied", after_ranks == before_ranks),
+                    ("worsened", after_ranks > before_ranks),
+                ):
+                    transitions[f"candidate_rank_{label}"] += int(
+                        (in_pool & mask).sum()
+                    )
             examples += targets.numel()
     result = metrics.compute()
     result["RetrievalRecall@M"] = retrieval_hits / max(examples, 1)
+    if refinement_report is not None:
+        refinement_report.update(
+            before=before.compute(),
+            after=result.copy(),
+            users=examples,
+            natural_candidates=int(retrieval_hits),
+            transitions=transitions,
+        )
     return result
 
 
@@ -103,6 +154,7 @@ def train(
         "train",
         config.dataset.timestamp_unit,
         config.model.gap_buckets,
+        config.dataset.neutral_feedback,
     )
     validation_dataset = TrajectoryDataset(
         corpus,
@@ -110,6 +162,7 @@ def train(
         "validation",
         config.dataset.timestamp_unit,
         config.model.gap_buckets,
+        config.dataset.neutral_feedback,
     )
     train_loader = create_loader(
         train_dataset,
@@ -197,7 +250,7 @@ def train(
                 "Training produced no batches. Reduce training.batch_size or add data."
             )
 
-        validation = evaluate(model, validation_loader, device)
+        validation = evaluate(model, validation_loader, device, amp=config.training.amp)
         selected = validation[config.training.selection_metric]
         elapsed = time.perf_counter() - started
         row = {

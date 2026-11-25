@@ -8,6 +8,7 @@
 | Sports and Outdoors | 0.001 | 0.3 |
 | Toys and Games | 0.001 | 0.3 |
 | Video Games | 0.001 | 0.3 |
+| MovieLens-1M | 0.001 | 0.2 |
 
 ## Shared settings
 
@@ -27,7 +28,7 @@
 | Graph | propagation layers | 1 |
 | Graph | maximum residual coefficient | 0.5 |
 | Graph | minimum edge count | 2 |
-| Graph | neighbors per item | 20 |
+| Graph | per-item edge selection before undirected union | 20 |
 | Multi-interest | interest count | 4 |
 | Multi-interest | pooling | max |
 | Multi-interest | maximum residual coefficient | 0.5 |
@@ -44,3 +45,9 @@
 | Objective | hard negatives in auxiliary loss | 20 |
 
 Reported seeds: `1`, `123`, `1337`, `2025`, and `2026`.
+
+The public profiles use batch size 256 for training and evaluation. ML-1M
+uses zero loader workers, CPU sparse propagation at evaluation, and an FP32
+candidate scorer. Width 50 corresponds to at most 49 visible states in
+a shifted window. Recency interpolates in log space from the first to the
+tenth epoch and stays at 0.5 thereafter.

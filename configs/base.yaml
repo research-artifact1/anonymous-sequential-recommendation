@@ -45,7 +45,7 @@ objective:
 training:
   seed: 2026
   batch_size: 256
-  eval_batch_size: 512
+  eval_batch_size: 256
   learning_rate: 0.001
   weight_decay: 0.0
   epochs: 200

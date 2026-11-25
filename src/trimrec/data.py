@@ -24,6 +24,7 @@ class Corpus:
     sequences: Mapping[Hashable, Tuple[Event, ...]]
     item_count: int
     interaction_count: int
+    train_val_only: bool = False
 
     @property
     def user_count(self) -> int:
@@ -31,9 +32,15 @@ class Corpus:
 
     @property
     def split_counts(self) -> Dict[str, int]:
-        valid_users = sum(len(sequence) >= 3 for sequence in self.sequences.values())
-        train = sum(max(len(sequence) - 3, 0) for sequence in self.sequences.values())
+        train = sum(
+            max(self.train_length(sequence) - 1, 0)
+            for sequence in self.sequences.values()
+        )
+        valid_users = self.user_count
         return {"train": train, "validation": valid_users, "test": valid_users}
+
+    def train_length(self, sequence: Sequence[Event]) -> int:
+        return len(sequence) - (1 if self.train_val_only else 2)
 
 
 def _parse_event(raw: object) -> Event:
@@ -47,7 +54,7 @@ def _parse_event(raw: object) -> Event:
     return event
 
 
-def load_corpus(path: Union[str, Path]) -> Corpus:
+def load_corpus(path: Union[str, Path], train_val_only: bool = False) -> Corpus:
     source = Path(path).expanduser()
     if not source.is_file():
         raise FileNotFoundError(source)
@@ -58,6 +65,8 @@ def load_corpus(path: Union[str, Path]) -> Corpus:
         raise ValueError(f"sequence file must contain mappings: {sorted(required)}")
     if not all(isinstance(payload[key], Mapping) for key in required):
         raise ValueError("sequences, itemmap, and usermap must be mappings")
+    if (payload.get("split") == "train_val_only") != train_val_only:
+        raise ValueError("sequence artifact does not match the configured split layout")
     item_ids = {int(value) for value in payload["itemmap"].values()}
     expected_ids = set(range(1, len(item_ids) + 1))
     if item_ids != expected_ids:
@@ -68,7 +77,9 @@ def load_corpus(path: Union[str, Path]) -> Corpus:
     interactions = 0
     for user_id, raw_sequence in payload["sequences"].items():
         events = tuple(_parse_event(raw) for raw in raw_sequence)
-        if len(events) < 3:
+        if len(events) < (2 if train_val_only else 3):
+            if train_val_only:
+                raise ValueError("invalid Train+Val sequence")
             continue
         if any(
             left.timestamp > right.timestamp for left, right in zip(events, events[1:])
@@ -80,7 +91,7 @@ def load_corpus(path: Union[str, Path]) -> Corpus:
             raise ValueError(f"sequence contains an unmapped item for user {user_id!r}")
     if not parsed:
         raise ValueError("no sequence with at least three interactions was found")
-    return Corpus(parsed, item_count, interactions)
+    return Corpus(parsed, item_count, interactions, train_val_only)
 
 
 def rating_to_reward(rating: float) -> float:
@@ -121,17 +132,21 @@ class TrajectoryDataset(Dataset[Dict[str, torch.Tensor]]):
         mode: str,
         timestamp_unit: str = "seconds",
         gap_buckets: int = 128,
+        neutral_feedback: bool = False,
     ) -> None:
         if mode not in self.MODES:
             raise ValueError(f"mode must be one of {sorted(self.MODES)}")
+        if mode == "test" and corpus.train_val_only:
+            raise ValueError("explicit held-out targets are required for Test")
         self.corpus = corpus
         self.max_length = int(max_length)
         self.mode = mode
         self.timestamp_unit = timestamp_unit
         self.gap_buckets = int(gap_buckets)
+        self.neutral_feedback = neutral_feedback
         self._records: List[Tuple[Tuple[Event, ...], int]] = []
         for sequence in corpus.sequences.values():
-            train_length = len(sequence) - 2
+            train_length = corpus.train_length(sequence)
             if mode == "train":
                 targets = range(1, train_length)
             elif mode == "validation":
@@ -146,11 +161,15 @@ class TrajectoryDataset(Dataset[Dict[str, torch.Tensor]]):
     def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
         sequence, target_index = self._records[index]
         items = [event.item_id for event in sequence]
-        ratings = [event.rating for event in sequence]
-        rewards = [rating_to_reward(rating) for rating in ratings]
+        train_length = self.corpus.train_length(sequence)
+        reward_prefix = sequence[: max(train_length, target_index)]
+        rewards = [
+            0.0 if self.neutral_feedback else rating_to_reward(event.rating)
+            for event in reward_prefix
+        ]
 
         gaps = [1]
-        for previous, current in zip(sequence, sequence[1:]):
+        for previous, current in zip(sequence, sequence[1:target_index]):
             gaps.append(
                 logarithmic_gap_bucket(
                     previous.timestamp,
@@ -160,7 +179,6 @@ class TrajectoryDataset(Dataset[Dict[str, torch.Tensor]]):
                 )
             )
 
-        train_length = len(sequence) - 2
         running_return = sum(rewards[:train_length]) + 2.0
         returns = [running_return]
         for reward in rewards:

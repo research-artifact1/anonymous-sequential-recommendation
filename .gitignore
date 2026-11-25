@@ -9,6 +9,8 @@ venv/
 .tools/
 .testenv/
 .runtime/
+build/
+dist/
 
 data/
 checkpoints/
@@ -17,6 +19,14 @@ logs/
 *.pt
 *.pth
 *.pkl
+*.npy
+*.npz
+*.zip
+*.tar
+*.tar.gz
+*.pdf
+.env
+.env.*
 
 .idea/
 .vscode/

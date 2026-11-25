@@ -18,9 +18,13 @@ class TrajectoryEncoder(nn.Module):
         max_timestep: int,
         gap_buckets: int,
         dropout: float,
+        use_return_token: bool = True,
+        use_time_gap: bool = True,
     ) -> None:
         super().__init__()
         self.max_timestep = max_timestep
+        self.use_return_token = use_return_token
+        self.use_time_gap = use_time_gap
         self.position_embedding = nn.Embedding(max_timestep, hidden_dim)
         self.return_projection = nn.Linear(1, hidden_dim)
         self.gap_embedding = nn.Embedding(gap_buckets, hidden_dim, padding_idx=0)
@@ -50,16 +54,20 @@ class TrajectoryEncoder(nn.Module):
             raise ValueError("timestep exceeds the configured maximum")
 
         positions = self.position_embedding(timesteps)
-        returns = self.return_projection(returns_to_go.unsqueeze(-1)) + positions
         state_tokens = F.embedding(states, item_table) + positions
-        state_tokens = state_tokens + self.gap_embedding(gap_buckets)
+        if self.use_time_gap:
+            state_tokens = state_tokens + self.gap_embedding(gap_buckets)
         action_tokens = F.embedding(actions, item_table) + positions
 
-        tokens = torch.stack((returns, state_tokens, action_tokens), dim=2)
-        tokens = tokens.reshape(batch_size, 3 * sequence_length, -1)
+        parts = (state_tokens, action_tokens)
+        if self.use_return_token:
+            returns = self.return_projection(returns_to_go.unsqueeze(-1)) + positions
+            parts = (returns, *parts)
+        stride = len(parts)
+        token_count = stride * sequence_length
+        tokens = torch.stack(parts, dim=2).reshape(batch_size, token_count, -1)
         tokens = self.dropout(tokens)
 
-        token_count = 3 * sequence_length
         causal_mask = torch.triu(
             torch.ones(
                 token_count,
@@ -69,10 +77,10 @@ class TrajectoryEncoder(nn.Module):
             ),
             diagonal=1,
         )
-        padding_mask = (~attention_mask.bool()).repeat_interleave(3, dim=1)
+        padding_mask = (~attention_mask.bool()).repeat_interleave(stride, dim=1)
         hidden = self.layers(
             tokens,
             mask=causal_mask,
             src_key_padding_mask=padding_mask,
         )
-        return hidden[:, 1::3]
+        return hidden[:, int(self.use_return_token) :: stride]

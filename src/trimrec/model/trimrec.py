@@ -24,6 +24,7 @@ class TRIMRecOutput:
     candidate_ids: torch.Tensor
     reranker_scores: torch.Tensor
     final_positions: torch.Tensor
+    retrieval_logits: torch.Tensor | None = None
 
 
 class TRIMRec(nn.Module):
@@ -62,6 +63,9 @@ class TRIMRec(nn.Module):
         self.register_buffer(
             "graph_adjacency", graph_adjacency.coalesce(), persistent=False
         )
+        self._cpu_eval_graph = (
+            self.graph_adjacency.cpu() if config.cpu_graph_eval else None
+        )
         self.register_buffer(
             "transition_indices", transition_indices.long(), persistent=False
         )
@@ -86,20 +90,29 @@ class TRIMRec(nn.Module):
 
         self.interest_norm = nn.LayerNorm(hidden_dim)
         self.interest_dropout = nn.Dropout(config.dropout)
-        self.interest_projection = nn.Linear(
-            hidden_dim, config.num_interests * hidden_dim
+        self.interest_projection = (
+            nn.Linear(hidden_dim, config.num_interests * hidden_dim)
+            if config.num_interests > 1
+            else None
         )
         self.interest_gate_raw = nn.Parameter(torch.zeros(1))
         self.transition_beta_raw = nn.Parameter(torch.zeros(1))
 
-        self.reranker = CandidateReranker(
-            hidden_dim=hidden_dim,
-            text_streams=config.text_streams,
-            top_m=config.reranker_top_m,
-            history_length=config.reranker_history_length,
-            attention_dim=config.reranker_attention_dim,
-            scorer_hidden_dim=config.reranker_hidden_dim,
-            beta_max=config.reranker_beta_max,
+        self.reranker = (
+            None
+            if config.refinement == "none"
+            else CandidateReranker(
+                hidden_dim=hidden_dim,
+                text_streams=config.text_streams,
+                top_m=config.reranker_top_m,
+                history_length=config.reranker_history_length,
+                attention_dim=config.reranker_attention_dim,
+                scorer_hidden_dim=config.reranker_hidden_dim,
+                beta_max=config.reranker_beta_max,
+                mode=config.refinement,
+                candidate_modalities=config.candidate_modalities,
+                fp32_scorer=config.fp32_scorer,
+            )
         )
 
         # Keep the initialization order used by the reported experiments:
@@ -112,7 +125,14 @@ class TRIMRec(nn.Module):
             max_timestep=config.max_timestep,
             gap_buckets=config.gap_buckets,
             dropout=config.dropout,
+            use_return_token=config.use_return_token,
+            use_time_gap=config.use_time_gap,
         )
+        if config.early_image_fusion:
+            with torch.random.fork_rng(devices=[]):
+                self.image_projection = nn.Linear(config.image_dim, hidden_dim)
+                self.image_norm = nn.LayerNorm(hidden_dim)
+            self.image_gate = nn.Parameter(torch.zeros(1))
 
     def _validate_inputs(
         self,
@@ -148,12 +168,19 @@ class TRIMRec(nn.Module):
     def build_item_table(self) -> torch.Tensor:
         item_table = self.text_id_norm(self.item_embedding.weight)
         for stream in range(self.config.text_streams):
-            text = self.text_norms[stream](
-                self.text_projections[stream](self.text_features[:, stream])
-            )
+            source = self.text_features[:, stream]
+            text = self.text_norms[stream](self.text_projections[stream](source))
+            if self.config.mask_missing_text_residual:
+                text = text * source.ne(0).any(dim=-1, keepdim=True)
             item_table = item_table + self.text_alpha[stream] * text
+        if self.config.early_image_fusion:
+            image = self.image_norm(self.image_projection(self.image_features))
+            available = self.image_features.ne(0).any(dim=-1, keepdim=True)
+            item_table = item_table + self.image_gate * image * available
         item_table = item_table.clone()
         item_table[0] = 0.0
+        if not self.config.use_graph:
+            return item_table
 
         output_dtype = item_table.dtype
         device_type = item_table.device.type
@@ -161,7 +188,14 @@ class TRIMRec(nn.Module):
             propagated = item_table.float()
             graph_outputs = []
             for _ in range(self.config.graph_layers):
-                propagated = torch.sparse.mm(self.graph_adjacency.float(), propagated)
+                if not self.training and self._cpu_eval_graph is not None:
+                    propagated = torch.sparse.mm(
+                        self._cpu_eval_graph.float(), propagated.cpu()
+                    ).to(item_table.device)
+                else:
+                    propagated = torch.sparse.mm(
+                        self.graph_adjacency.float(), propagated
+                    )
                 graph_outputs.append(propagated)
             graph_context = self.graph_norm(torch.stack(graph_outputs).mean(0))
             gamma = bounded_residual(
@@ -179,6 +213,8 @@ class TRIMRec(nn.Module):
         state_hidden: torch.Tensor,
         item_table: torch.Tensor,
     ) -> torch.Tensor:
+        if self.interest_projection is None:
+            return logits
         batch_size, sequence_length, hidden_dim = state_hidden.shape
         deltas = self.interest_projection(
             self.interest_dropout(self.interest_norm(state_hidden))
@@ -215,7 +251,9 @@ class TRIMRec(nn.Module):
             beta.to(logits.dtype) * candidate_values.to(logits.dtype),
         )
 
-    def forward(self, batch: dict[str, torch.Tensor]) -> TRIMRecOutput:
+    def forward(
+        self, batch: dict[str, torch.Tensor], *, include_retrieval: bool = False
+    ) -> TRIMRecOutput:
         item_table = self.build_item_table()
         state_hidden = self.encoder(
             states=batch["states"],
@@ -228,7 +266,14 @@ class TRIMRec(nn.Module):
         )
         logits = F.linear(state_hidden, item_table, self.output_bias)
         logits = self._apply_multi_interest(logits, state_hidden, item_table)
-        logits = self._apply_transition_prior(logits, batch["states"])
+        if self.config.use_transition:
+            logits = self._apply_transition_prior(logits, batch["states"])
+        if self.reranker is None:
+            terminal = batch["attention_mask"].sum(1).long() - 1
+            empty_ids = batch["states"].new_empty((logits.size(0), 0))
+            return TRIMRecOutput(
+                logits, empty_ids, logits.new_empty(empty_ids.shape), terminal
+            )
         reranked = self.reranker(
             logits=logits,
             states=batch["states"],
@@ -242,6 +287,14 @@ class TRIMRec(nn.Module):
             candidate_ids=reranked.candidate_ids,
             reranker_scores=reranked.scores,
             final_positions=reranked.final_positions,
+            retrieval_logits=(
+                logits[
+                    torch.arange(logits.size(0), device=logits.device),
+                    reranked.final_positions,
+                ]
+                if include_retrieval
+                else None
+            ),
         )
 
     def parameter_count(self, trainable_only: bool = False) -> int:

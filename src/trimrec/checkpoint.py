@@ -72,6 +72,12 @@ def load_checkpoint(
                 raise ValueError(
                     f"checkpoint configuration mismatch in section: {section}"
                 )
+        for field in ("seed", "amp"):
+            if (
+                saved_config.get("training", {}).get(field)
+                != expected_config["training"][field]
+            ):
+                raise ValueError(f"checkpoint configuration mismatch: training.{field}")
     model.load_state_dict(payload["model_state"], strict=True)
     if optimizer is not None:
         optimizer.load_state_dict(payload["optimizer_state"])

@@ -18,6 +18,8 @@ class DatasetConfig:
     image_features_path: str
     max_length: int = 50
     timestamp_unit: str = "seconds"
+    neutral_feedback: bool = False
+    train_val_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,16 @@ class ModelConfig:
     reranker_attention_dim: int = 64
     reranker_hidden_dim: int = 64
     reranker_beta_max: float = 3.0
+    use_return_token: bool = True
+    use_time_gap: bool = True
+    use_graph: bool = True
+    use_transition: bool = True
+    refinement: str = "cross_attention"
+    candidate_modalities: bool = True
+    mask_missing_text_residual: bool = False
+    cpu_graph_eval: bool = False
+    fp32_scorer: bool = False
+    early_image_fusion: bool = False
 
 
 @dataclass(frozen=True)
@@ -120,8 +132,12 @@ class ExperimentConfig:
             raise ValueError("model.dropout must be in [0, 1)")
         if self.model.gap_buckets <= 1:
             raise ValueError("model.gap_buckets must be greater than 1")
-        if self.model.num_interests < 2:
-            raise ValueError("model.num_interests must be at least 2")
+        if self.model.num_interests < 1:
+            raise ValueError("model.num_interests must be positive")
+        if self.model.refinement not in {"cross_attention", "similarity", "none"}:
+            raise ValueError("unknown candidate refinement mode")
+        if self.model.refinement == "none" and self.objective.reranker_aux_weight:
+            raise ValueError("candidate auxiliary loss requires refinement")
         if self.model.reranker_top_m <= 1:
             raise ValueError("model.reranker_top_m must be greater than 1")
         if self.structure.exclude_last != 2:
@@ -204,7 +220,20 @@ def _apply_overrides(payload: Dict[str, Any], overrides: Iterable[str]) -> None:
                 raise KeyError(f"unknown configuration path: {dotted_key}")
             target = value
         leaf = keys[-1]
-        if leaf not in target:
+        classes = {
+            "dataset": DatasetConfig,
+            "model": ModelConfig,
+            "structure": StructureConfig,
+            "objective": ObjectiveConfig,
+            "training": TrainingConfig,
+            "output": OutputConfig,
+        }
+        section = classes.get(keys[0])
+        if leaf not in target and not (
+            len(keys) == 2
+            and section is not None
+            and leaf in section.__dataclass_fields__
+        ):
             raise KeyError(f"unknown configuration key: {dotted_key}")
         target[leaf] = _parse_scalar(raw_value)
 
